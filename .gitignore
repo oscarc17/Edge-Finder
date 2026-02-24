@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Generated data / local DB
+data/polymarket.duckdb
+data/research_v2/
+data/research_v2_single/
+data/research_outputs/

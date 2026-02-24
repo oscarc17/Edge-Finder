@@ -1,0 +1,8 @@
+collection:
+  minutes: 5
+  hours: 168
+  max_markets: 1000
+  with_trades: true
+  trade_markets: 200
+  resolved_trade_markets: 200
+

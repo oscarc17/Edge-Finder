@@ -1,0 +1,35 @@
+collection:
+  minutes: 5
+  hours: 24
+  max_markets: 800
+  with_trades: true
+  trade_markets: 150
+  resolved_trade_markets: 150
+
+research:
+  output_dir: data/research_v2
+  min_data:
+    min_ts: 500
+    min_mkts: 200
+    min_snapshots: 50000
+    min_test_trades: 300
+    min_fold_trades: 50
+  ev_threshold: 0.0
+  execution_regime: base
+  portfolio_method: risk_parity
+  strategies:
+    cross_market_inefficiency_v2: true
+    resolution_rule_mispricing_v2: true
+    liquidity_premium_v2: true
+    momentum_vs_mean_reversion_v2: true
+    whale_behavior_v2: true
+    consistency_arb: true
+    microstructure_mm: true
+    resolution_mechanics: true
+
+deployment_gate:
+  min_ev_spearman: 0.2
+  min_valid_folds: 3
+  pbo_max: 0.5
+  concentration_market_max_pnl_share: 0.4
+
