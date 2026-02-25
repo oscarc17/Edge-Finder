@@ -1,4 +1,4 @@
-# Edge-Finder (Polymarket Quant Research Scaffold)
+# Polymarket Edge-Finder (Polymarket Quant Research Scaffold)
 
 Systematic research framework for detecting statistically testable edges in Polymarket prediction markets.
 
