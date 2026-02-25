@@ -134,6 +134,31 @@ SCHEMA_SQL: Iterable[str] = (
     );
     """,
     """
+    CREATE TABLE IF NOT EXISTS outcome_links (
+        market_id VARCHAR PRIMARY KEY,
+        yes_token_id VARCHAR,
+        no_token_id VARCHAR,
+        link_source VARCHAR,
+        created_ts TIMESTAMP,
+        updated_ts TIMESTAMP,
+        metadata_json VARCHAR
+    );
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS market_sets (
+        set_id VARCHAR,
+        market_id VARCHAR,
+        outcome_label VARCHAR,
+        weight DOUBLE,
+        set_type VARCHAR,
+        link_confidence DOUBLE,
+        created_ts TIMESTAMP,
+        updated_ts TIMESTAMP,
+        metadata_json VARCHAR,
+        PRIMARY KEY (set_id, market_id)
+    );
+    """,
+    """
     CREATE TABLE IF NOT EXISTS returns (
         token_id VARCHAR,
         ts TIMESTAMP,
@@ -204,6 +229,9 @@ INDEX_SQL: Iterable[str] = (
     "CREATE INDEX IF NOT EXISTS idx_resolved_markets_ts ON resolved_markets(resolved_ts);",
     "CREATE INDEX IF NOT EXISTS idx_market_links_a ON market_links(market_id_a);",
     "CREATE INDEX IF NOT EXISTS idx_market_links_b ON market_links(market_id_b);",
+    "CREATE INDEX IF NOT EXISTS idx_outcome_links_market ON outcome_links(market_id);",
+    "CREATE INDEX IF NOT EXISTS idx_market_sets_set ON market_sets(set_id);",
+    "CREATE INDEX IF NOT EXISTS idx_market_sets_market ON market_sets(market_id);",
 )
 
 

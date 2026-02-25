@@ -18,19 +18,23 @@ from polymarket_edge.db import get_connection, init_db
 from polymarket_edge.edges.consistency_arb import run as run_consistency_arb
 from polymarket_edge.edges.microstructure_mm import run as run_microstructure_mm
 from polymarket_edge.edges.resolution_mechanics import run as run_resolution_mechanics
+from polymarket_edge.research.arb_data_quality import ArbDataQualityThresholds, write_arb_data_quality_report
 from polymarket_edge.research.data import build_orderbook_sanity_reports, build_yes_feature_panel
 from polymarket_edge.research.data_quality import audit_feature_panel
 from polymarket_edge.research.integrity import IntegrityThresholds, run_research_integrity
-from polymarket_edge.research.linking import refresh_market_links
+from polymarket_edge.research.linking import build_market_links_summary, refresh_market_links, refresh_market_sets, refresh_outcome_links
 from polymarket_edge.research.portfolio import build_portfolio
+from polymarket_edge.research.advanced_validation import build_pbo_debug
 from polymarket_edge.scoring import score_edges
 from polymarket_edge.strategies import (
+    ConsistencyArbStrategy,
     CrossMarketStrategy,
     LiquidityPremiumStrategy,
     MomentumReversionStrategy,
     ResolutionRuleStrategy,
     WhaleBehaviorStrategy,
 )
+from polymarket_edge.strategies.consistency_arb import ConsistencyArbStrategyConfig
 from polymarket_edge.strategies.cross_market import CrossMarketStrategyConfig
 from polymarket_edge.strategies.liquidity_premium import LiquidityPremiumStrategyConfig
 from polymarket_edge.strategies.momentum import MomentumStrategyConfig
@@ -82,10 +86,17 @@ def _save_strategy_outputs(base_dir: Path, name: str, result) -> None:
     d = base_dir / name
     _ensure_dir(d)
     result.signal_frame.to_csv(d / "signals.csv", index=False)
+    result.signal_frame.to_csv(d / "opportunities.csv", index=False)
+    if str(name).startswith("consistency_arb"):
+        alias = base_dir / "consistency_arb"
+        _ensure_dir(alias)
+        result.signal_frame.to_csv(alias / "opportunities.csv", index=False)
     result.train_summary.to_csv(d / "train_summary.csv", index=False)
     result.test_summary.to_csv(d / "test_summary.csv", index=False)
     result.train_trades.to_csv(d / "train_trades.csv", index=False)
     result.test_trades.to_csv(d / "test_trades.csv", index=False)
+    if str(name).startswith("consistency_arb"):
+        result.test_trades.to_csv(d / "paired_trades.csv", index=False)
     result.validation_summary.to_csv(d / "validation.csv", index=False)
     result.explain_summary.to_csv(d / "feature_importance.csv", index=False)
     result.strong_conditions.to_csv(d / "strong_conditions.csv", index=False)
@@ -222,6 +233,13 @@ def _strategy_report_row(name: str, result) -> dict[str, Any]:
     )
     return_per_day = float(test_best.get("return_per_day", 0.0)) if test_best is not None else 0.0
     return_per_event = float(test_best.get("return_per_event", 0.0)) if test_best is not None else 0.0
+    hedged_fill_rate = float(test_best.get("hedged_fill_rate", 0.0)) if test_best is not None else 0.0
+    gross_abs = abs(float(cost.get("gross_pnl", 0.0)))
+    total_cost_abs = sum(
+        abs(float(cost.get(k, 0.0)))
+        for k in ["fees", "spread_cost", "vol_slippage", "impact_cost"]
+    )
+    cost_dominance_ratio = float(total_cost_abs / max(gross_abs, 1e-9)) if gross_abs > 0 else (1.0 if total_cost_abs > 0 else 0.0)
     return {
         "strategy": name,
         "model": selected_model,
@@ -243,6 +261,8 @@ def _strategy_report_row(name: str, result) -> dict[str, Any]:
         "return_per_event": return_per_event,
         "test_sharpe": float(test_best.get("sharpe", 0.0)) if test_best is not None else 0.0,
         "test_drawdown": float(test_best.get("max_drawdown", 0.0)) if test_best is not None else 0.0,
+        "hedged_fill_rate": hedged_fill_rate,
+        "cost_dominance_ratio": cost_dominance_ratio,
         "ttest_stat": float(valid.get("ttest_stat", 0.0)),
         "ttest_pvalue": float(valid.get("ttest_pvalue", 1.0)),
         "ttest_pvalue_pos": float(valid.get("ttest_pvalue_pos", 1.0)),
@@ -319,25 +339,27 @@ def _build_edge_score_input(report_df: pd.DataFrame) -> pd.DataFrame:
         frame["model_reason"].astype(str).str.contains("degenerate_train_labels", case=False, na=False)
         | frame["label_warning"].astype(str).str.contains("degenerate_train_labels", case=False, na=False)
     ).astype(float)
-    return frame[
-        [
-            "edge_name",
-            "p_value",
-            "p_value_pos",
-            "t_stat",
-            "n_obs",
-            "ci_low",
-            "capacity_usd",
-            "stability",
-            "mean_return",
-            "expectancy_per_trade",
-            "return_per_day",
-            "return_per_event",
-            "test_trade_count",
-            "walkforward_valid_folds",
-            "label_degenerate",
-        ]
+    cols = [
+        "edge_name",
+        "p_value",
+        "p_value_pos",
+        "t_stat",
+        "n_obs",
+        "ci_low",
+        "capacity_usd",
+        "stability",
+        "mean_return",
+        "expectancy_per_trade",
+        "return_per_day",
+        "return_per_event",
+        "test_trade_count",
+        "walkforward_valid_folds",
+        "label_degenerate",
     ]
+    for extra in ["hedged_fill_rate", "cost_dominance_ratio"]:
+        if extra in frame.columns:
+            cols.append(extra)
+    return frame[cols]
 
 
 def _panel_sanity_frame(panel: pd.DataFrame, orderbook_missingness: pd.DataFrame) -> pd.DataFrame:
@@ -527,7 +549,64 @@ def main() -> None:
         links = refresh_market_links(conn)
     except Exception:
         links = pd.DataFrame()
+    try:
+        outcome_links = refresh_outcome_links(conn)
+    except Exception:
+        outcome_links = pd.DataFrame()
+    try:
+        market_sets = refresh_market_sets(conn)
+    except Exception:
+        market_sets = pd.DataFrame()
     links.to_csv(out_dir / "market_links.csv", index=False)
+    if not outcome_links.empty:
+        outcome_links.to_csv(out_dir / "outcome_links.csv", index=False)
+    if not market_sets.empty:
+        market_sets.to_csv(out_dir / "market_sets.csv", index=False)
+    try:
+        build_market_links_summary(conn).to_csv(out_dir / "market_links_summary.csv", index=False)
+    except Exception:
+        pd.DataFrame().to_csv(out_dir / "market_links_summary.csv", index=False)
+    arb_q = write_arb_data_quality_report(
+        conn,
+        out_dir / "arb_data_quality.csv",
+        thresholds=ArbDataQualityThresholds(min_both_legs_coverage=0.80, recent_hours=72.0),
+    )
+    arb_coverage = float(arb_q.get("both_legs_coverage", 0.0)) if isinstance(arb_q, dict) else 0.0
+    if not bool(arb_q.get("passed", False)):
+        msg = (
+            "INSUFFICIENT_DATA: complement YES/NO two-leg coverage is too low for consistency arbitrage "
+            f"(both_legs_coverage={arb_coverage:.2%}, required>=80%). See arb_data_quality.csv."
+        )
+        _write_insufficient_data_report(
+            out_dir,
+            pd.DataFrame(
+                [
+                    {
+                        "check_group": "arb_data_quality",
+                        "metric": "both_legs_coverage",
+                        "value": arb_coverage,
+                        "required_min": 0.80,
+                        "passed": 0,
+                        "missing_qty": max(0.0, 0.80 - arb_coverage),
+                        "reason": "both_legs_coverage_below_threshold",
+                    }
+                ]
+            ),
+            message=msg,
+        )
+        summary_payload = {
+            "run_ts": str(run_ts),
+            "panel_rows": int(len(panel)),
+            "n_unique_ts": n_unique_ts,
+            "ts_min": str(ts_min) if ts_min is not None else None,
+            "ts_max": str(ts_max) if ts_max is not None else None,
+            "arb_both_legs_coverage": arb_coverage,
+            "insufficient_data": True,
+            "message": msg,
+            "outputs_dir": str(out_dir),
+        }
+        (out_dir / "run_summary.json").write_text(json.dumps(summary_payload, indent=2), encoding="utf-8")
+        raise SystemExit(msg)
     consistency = run_consistency_arb(conn)
     micro_mm = run_microstructure_mm(conn, panel=panel)
     resolution_mech = run_resolution_mechanics(conn)
@@ -636,6 +715,7 @@ def main() -> None:
         raise SystemExit(msg)
 
     strategies = [
+        ConsistencyArbStrategy(ConsistencyArbStrategyConfig()),
         CrossMarketStrategy(CrossMarketStrategyConfig(model_type="auto")),
         ResolutionRuleStrategy(ResolutionRuleStrategyConfig(model_type="auto")),
         LiquidityPremiumStrategy(LiquidityPremiumStrategyConfig(model_type="auto")),
@@ -651,6 +731,7 @@ def main() -> None:
     label_rows: list[pd.DataFrame] = []
     walkforward_fold_rows: list[pd.DataFrame] = []
     live_opportunity_rows: list[pd.DataFrame] = []
+    pbo_debug_rows: list[pd.DataFrame] = []
 
     for strat in strategies:
         result = strat.run(conn, panel, context={})
@@ -683,6 +764,31 @@ def main() -> None:
             wf_folds = result.walkforward_folds.copy()
             wf_folds["strategy"] = strat.name
             walkforward_fold_rows.append(wf_folds)
+        try:
+            pbo_debug = build_pbo_debug(
+                result.test_trades if isinstance(result.test_trades, pd.DataFrame) else pd.DataFrame(),
+                strategy_name=strat.name,
+                chosen_threshold=float(result.tuned_params.get("threshold", 0.0)),
+                chosen_holding_period=int(result.tuned_params.get("holding_period", 1)),
+            )
+        except Exception as exc:
+            pbo_debug = pd.DataFrame(
+                [
+                    {
+                        "strategy": strat.name,
+                        "fold_id": np.nan,
+                        "n_configs": 0.0,
+                        "chosen_config": "",
+                        "chosen_final_config": "",
+                        "chosen_is_rank": np.nan,
+                        "chosen_oos_rank": np.nan,
+                        "lambda": np.nan,
+                        "status": "invalid",
+                        "reason": f"pbo_debug_error:{type(exc).__name__}",
+                    }
+                ]
+            )
+        pbo_debug_rows.append(pbo_debug)
         if not result.signal_frame.empty:
             sig = result.signal_frame.copy()
             if "ts" in sig.columns:
@@ -707,8 +813,13 @@ def main() -> None:
                     live = live[cols_keep].copy()
                     live["strategy"] = strat.name
                     live["required_notional"] = float(getattr(strat.config, "base_trade_notional", 250.0))
+                    depth_series = (
+                        live["depth_total"]
+                        if "depth_total" in live.columns
+                        else (live["min_pair_depth"] if "min_pair_depth" in live.columns else pd.Series(0.0, index=live.index))
+                    )
                     live["estimated_fill_probability"] = np.clip(
-                        pd.to_numeric(live.get("depth_total"), errors="coerce").fillna(0.0) / 1000.0,
+                        pd.to_numeric(depth_series, errors="coerce").fillna(0.0) / 1000.0,
                         0.01,
                         1.0,
                     )
@@ -726,6 +837,8 @@ def main() -> None:
     walkforward_folds_all = pd.concat(walkforward_fold_rows, ignore_index=True) if walkforward_fold_rows else pd.DataFrame()
     if not walkforward_folds_all.empty:
         walkforward_folds_all.to_csv(out_dir / "walkforward_folds_all.csv", index=False)
+    pbo_debug_all = pd.concat(pbo_debug_rows, ignore_index=True) if pbo_debug_rows else pd.DataFrame()
+    pbo_debug_all.to_csv(out_dir / "pbo_debug.csv", index=False)
     deployment_df = pd.concat(deployment_rows, ignore_index=True) if deployment_rows else pd.DataFrame()
     deployment_df.to_csv(out_dir / "deployment_readiness.csv", index=False)
     if not deployment_df.empty and "criterion" in deployment_df.columns:

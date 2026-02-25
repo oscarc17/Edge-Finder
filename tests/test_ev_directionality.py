@@ -63,7 +63,7 @@ class EVDirectionalityTests(unittest.TestCase):
                 "signal": np.sign(ev),
                 "mid": 0.5,
                 "trade_return": realized,
-                "expected_ev": ev,
+                "expected_net_return": ev,
             }
         )
         diag = run_signal_diagnostics(signal_frame=trades.copy(), trades=trades, feature_cols=[])
@@ -72,6 +72,7 @@ class EVDirectionalityTests(unittest.TestCase):
         self.assertGreater(float(total["ev_spearman"]), 0.0)
         self.assertGreaterEqual(float(total["ev_monotonic_pass"]), 1.0)
         self.assertGreaterEqual(float(total["ev_model_valid"]), 1.0)
+        self.assertEqual(str(total["ev_expected_col"]), "expected_net_return")
 
 
 if __name__ == "__main__":

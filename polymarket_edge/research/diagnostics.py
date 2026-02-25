@@ -172,7 +172,11 @@ def _performance_by_signal_decile(trades: pd.DataFrame, n_bins: int = 10) -> pd.
     rows: list[dict[str, float]] = []
     for d, g in t.groupby("signal_decile", observed=True):
         r = pd.to_numeric(g["trade_return"], errors="coerce").fillna(0.0)
-        if "expected_ev" in g.columns:
+        if "expected_net_return" in g.columns:
+            ev = pd.to_numeric(g["expected_net_return"], errors="coerce").fillna(0.0)
+        elif "expected_return" in g.columns:
+            ev = pd.to_numeric(g["expected_return"], errors="coerce").fillna(0.0)
+        elif "expected_ev" in g.columns:
             ev = pd.to_numeric(g["expected_ev"], errors="coerce").fillna(0.0)
         else:
             ev = pd.Series(0.0, index=g.index)
@@ -275,10 +279,15 @@ def _model_vs_market(trades: pd.DataFrame) -> pd.DataFrame:
 
 
 def _ev_diagnostics(trades: pd.DataFrame) -> pd.DataFrame:
-    if trades.empty or "expected_ev" not in trades.columns:
+    exp_col = None
+    for c in ["expected_net_return", "expected_return", "expected_ev"]:
+        if c in trades.columns:
+            exp_col = c
+            break
+    if trades.empty or exp_col is None:
         return pd.DataFrame()
     t = trades.copy()
-    ev = pd.to_numeric(t["expected_ev"], errors="coerce").fillna(0.0)
+    ev = pd.to_numeric(t[exp_col], errors="coerce").fillna(0.0)
     real = pd.to_numeric(t["trade_return"], errors="coerce").fillna(0.0)
     if ev.nunique() <= 1:
         bins = pd.Series(0, index=t.index)
@@ -288,7 +297,7 @@ def _ev_diagnostics(trades: pd.DataFrame) -> pd.DataFrame:
 
     rows: list[dict[str, float]] = []
     for b, g in t.groupby("ev_bin", observed=True):
-        e = pd.to_numeric(g["expected_ev"], errors="coerce").fillna(0.0)
+        e = pd.to_numeric(g[exp_col], errors="coerce").fillna(0.0)
         r = pd.to_numeric(g["trade_return"], errors="coerce").fillna(0.0)
         rows.append(
             {
@@ -302,6 +311,8 @@ def _ev_diagnostics(trades: pd.DataFrame) -> pd.DataFrame:
         )
 
     bins_only = pd.DataFrame(rows).sort_values("ev_bin")
+    n_bins_populated = int(len(bins_only))
+    min_bin_count = int(pd.to_numeric(bins_only["n"], errors="coerce").min()) if not bins_only.empty else 0
     monotonic_pass = 0.0
     if not bins_only.empty and len(bins_only) >= 2:
         ordered = bins_only.sort_values("avg_expected_ev")
@@ -319,7 +330,12 @@ def _ev_diagnostics(trades: pd.DataFrame) -> pd.DataFrame:
         corr = 0.0
     pos_ev_mask = ev > 0.0
     hit_rate_pos_ev = float(np.mean(real[pos_ev_mask] > 0.0)) if float(pos_ev_mask.sum()) > 0.0 else 0.0
-    ev_model_valid = float(not (len(t) > 100 and ev_spearman < 0.0))
+    min_trades_for_sign = 100
+    well_populated_bins = bool(n_bins_populated >= min(5, max(1, ev.nunique()))) and (min_bin_count > 0)
+    if len(t) < min_trades_for_sign:
+        ev_model_valid = 1.0 if well_populated_bins else 0.0
+    else:
+        ev_model_valid = 1.0 if (ev_spearman >= 0.0 and well_populated_bins) else 0.0
 
     out = pd.DataFrame(rows).sort_values("ev_bin")
     out["ev_calibration_beta"] = beta
@@ -330,6 +346,10 @@ def _ev_diagnostics(trades: pd.DataFrame) -> pd.DataFrame:
     out["hit_rate_pos_ev"] = hit_rate_pos_ev
     out["ev_model_valid"] = ev_model_valid
     out["n_trades"] = float(len(t))
+    out["ev_expected_col"] = str(exp_col)
+    out["ev_bins_populated"] = float(n_bins_populated)
+    out["ev_min_bin_count"] = float(min_bin_count)
+    out["ev_well_populated_bins"] = float(well_populated_bins)
     return out
 
 

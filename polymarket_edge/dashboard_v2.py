@@ -7,10 +7,20 @@ import numpy as np
 import pandas as pd
 import plotly.express as px
 import streamlit as st
+from pandas.errors import EmptyDataError
 
 
 st.set_page_config(page_title="Polymarket Edge Research V2", layout="wide")
 st.title("Polymarket Edge Research Dashboard (V2)")
+
+
+def _read_csv_safe(path: Path) -> pd.DataFrame:
+    if not path.exists():
+        return pd.DataFrame()
+    try:
+        return pd.read_csv(path)
+    except EmptyDataError:
+        return pd.DataFrame()
 
 base = Path("data/research_v2")
 strategy_path = base / "strategy_report.csv"
@@ -28,32 +38,36 @@ integrity_post_path = base / "integrity_report_post.csv"
 data_quality_summary_path = base / "data_quality_summary.csv"
 data_quality_missingness_path = base / "data_quality_missingness.csv"
 data_quality_pinned_path = base / "data_quality_pinned_markets.csv"
+arb_data_quality_path = base / "arb_data_quality.csv"
 live_opps_path = base / "live_opportunities.csv"
 portfolio_risk_report_path = base / "portfolio_risk_report.csv"
 strategy_correlation_path = base / "strategy_correlation.csv"
+pbo_debug_path = base / "pbo_debug.csv"
 
-strategy = pd.read_csv(strategy_path) if strategy_path.exists() else pd.DataFrame()
-scores = pd.read_csv(score_path) if score_path.exists() else pd.DataFrame()
-portfolio = pd.read_csv(portfolio_path) if portfolio_path.exists() else pd.DataFrame()
-orderbook_missingness = pd.read_csv(orderbook_missingness_path) if orderbook_missingness_path.exists() else pd.DataFrame()
-orderbook_distribution = pd.read_csv(orderbook_distribution_path) if orderbook_distribution_path.exists() else pd.DataFrame()
-panel_sanity = pd.read_csv(panel_sanity_path) if panel_sanity_path.exists() else pd.DataFrame()
-readiness_report = pd.read_csv(readiness_report_path) if readiness_report_path.exists() else pd.DataFrame()
-label_diag = pd.read_csv(label_diag_path) if label_diag_path.exists() else pd.DataFrame()
-insufficient_report = pd.read_csv(insufficient_report_path) if insufficient_report_path.exists() else pd.DataFrame()
-integrity_pre = pd.read_csv(integrity_pre_path) if integrity_pre_path.exists() else pd.DataFrame()
-integrity_post = pd.read_csv(integrity_post_path) if integrity_post_path.exists() else pd.DataFrame()
-data_quality_summary = pd.read_csv(data_quality_summary_path) if data_quality_summary_path.exists() else pd.DataFrame()
-data_quality_missingness = pd.read_csv(data_quality_missingness_path) if data_quality_missingness_path.exists() else pd.DataFrame()
-data_quality_pinned = pd.read_csv(data_quality_pinned_path) if data_quality_pinned_path.exists() else pd.DataFrame()
-live_opps = pd.read_csv(live_opps_path) if live_opps_path.exists() else pd.DataFrame()
-portfolio_risk_report = pd.read_csv(portfolio_risk_report_path) if portfolio_risk_report_path.exists() else pd.DataFrame()
-strategy_corr_default = pd.read_csv(strategy_correlation_path) if strategy_correlation_path.exists() else pd.DataFrame()
+strategy = _read_csv_safe(strategy_path)
+scores = _read_csv_safe(score_path)
+portfolio = _read_csv_safe(portfolio_path)
+orderbook_missingness = _read_csv_safe(orderbook_missingness_path)
+orderbook_distribution = _read_csv_safe(orderbook_distribution_path)
+panel_sanity = _read_csv_safe(panel_sanity_path)
+readiness_report = _read_csv_safe(readiness_report_path)
+label_diag = _read_csv_safe(label_diag_path)
+insufficient_report = _read_csv_safe(insufficient_report_path)
+integrity_pre = _read_csv_safe(integrity_pre_path)
+integrity_post = _read_csv_safe(integrity_post_path)
+data_quality_summary = _read_csv_safe(data_quality_summary_path)
+data_quality_missingness = _read_csv_safe(data_quality_missingness_path)
+data_quality_pinned = _read_csv_safe(data_quality_pinned_path)
+arb_data_quality = _read_csv_safe(arb_data_quality_path)
+live_opps = _read_csv_safe(live_opps_path)
+portfolio_risk_report = _read_csv_safe(portfolio_risk_report_path)
+strategy_corr_default = _read_csv_safe(strategy_correlation_path)
+pbo_debug = _read_csv_safe(pbo_debug_path)
 run_summary = {}
 if run_summary_path.exists():
     run_summary = json.loads(run_summary_path.read_text(encoding="utf-8"))
 deployment_summary_path = base / "deployment_readiness_summary.csv"
-deployment_summary = pd.read_csv(deployment_summary_path) if deployment_summary_path.exists() else pd.DataFrame()
+deployment_summary = _read_csv_safe(deployment_summary_path)
 
 if strategy.empty:
     st.warning("No strategy report found. Research may have exited early (e.g., INSUFFICIENT_DATA).")
@@ -77,11 +91,11 @@ selected_method = st.selectbox("Portfolio Method", methods or ["risk_parity"])
 weights_path = base / f"portfolio_weights_{selected_method}.csv"
 corr_path = base / f"portfolio_correlation_{selected_method}.csv"
 ts_path = base / f"portfolio_timeseries_{selected_method}.csv"
-weights = pd.read_csv(weights_path) if weights_path.exists() else pd.DataFrame()
-corr = pd.read_csv(corr_path) if corr_path.exists() else pd.DataFrame()
+weights = _read_csv_safe(weights_path)
+corr = _read_csv_safe(corr_path)
 if corr.empty and not strategy_corr_default.empty:
     corr = strategy_corr_default.copy()
-portfolio_ts = pd.read_csv(ts_path) if ts_path.exists() else pd.DataFrame()
+portfolio_ts = _read_csv_safe(ts_path)
 
 col1, col2, col3, col4 = st.columns(4)
 col1.metric("Strategies", int(strategy["strategy"].nunique()))
@@ -106,6 +120,15 @@ if not panel_sanity.empty:
 if not data_quality_summary.empty:
     st.subheader("Data Quality Summary")
     st.dataframe(data_quality_summary, use_container_width=True)
+if not arb_data_quality.empty:
+    st.subheader("Arbitrage Data Quality (YES/NO Both-Leg Coverage)")
+    agg = arb_data_quality[arb_data_quality.get("level", "").astype(str).eq("aggregate")] if "level" in arb_data_quality.columns else arb_data_quality
+    if not agg.empty:
+        st.dataframe(agg, use_container_width=True)
+    bad_mkts = arb_data_quality[(arb_data_quality.get("level", "").astype(str) == "market") & (pd.to_numeric(arb_data_quality.get("passed"), errors="coerce").fillna(0.0) < 0.5)] if {"level", "passed"}.issubset(arb_data_quality.columns) else pd.DataFrame()
+    if not bad_mkts.empty:
+        st.caption("Low-coverage markets (top 50)")
+        st.dataframe(bad_mkts.head(50), use_container_width=True)
 if not integrity_pre.empty or not integrity_post.empty:
     st.subheader("Research Integrity")
     if not integrity_pre.empty:
@@ -162,6 +185,14 @@ if not deployment_summary.empty:
     if dep_cols:
         st.subheader("Deployment Gate")
         st.dataframe(deployment_summary[dep_cols], use_container_width=True)
+if not pbo_debug.empty:
+    st.subheader("PBO Debug")
+    st.dataframe(pbo_debug.head(200), use_container_width=True)
+    if {"strategy", "lambda", "status"}.issubset(pbo_debug.columns):
+        ok = pbo_debug[pbo_debug["status"].astype(str).eq("ok")].copy()
+        if not ok.empty:
+            fig_pbo = px.box(ok, x="strategy", y="lambda", title="PBO Lambda Distribution by Strategy")
+            st.plotly_chart(fig_pbo, use_container_width=True)
 
 if {"strategy", "model", "walkforward_mean_expectancy"}.issubset(strategy.columns):
     fig_wf = px.bar(
@@ -183,13 +214,13 @@ ev_diag_path = strat_dir / "ev_diagnostics.csv"
 cost_path = strat_dir / "cost_decomposition.csv"
 test_trades_path = strat_dir / "test_trades.csv"
 
-calib = pd.read_csv(calib_path) if calib_path.exists() else pd.DataFrame()
-deciles = pd.read_csv(decile_path) if decile_path.exists() else pd.DataFrame()
-attrib = pd.read_csv(attrib_path) if attrib_path.exists() else pd.DataFrame()
-deploy = pd.read_csv(deploy_path) if deploy_path.exists() else pd.DataFrame()
-ev_diag = pd.read_csv(ev_diag_path) if ev_diag_path.exists() else pd.DataFrame()
-cost = pd.read_csv(cost_path) if cost_path.exists() else pd.DataFrame()
-test_trades = pd.read_csv(test_trades_path) if test_trades_path.exists() else pd.DataFrame()
+calib = _read_csv_safe(calib_path)
+deciles = _read_csv_safe(decile_path)
+attrib = _read_csv_safe(attrib_path)
+deploy = _read_csv_safe(deploy_path)
+ev_diag = _read_csv_safe(ev_diag_path)
+cost = _read_csv_safe(cost_path)
+test_trades = _read_csv_safe(test_trades_path)
 
 profit_cols = [c for c in ["strategy", "return_per_day", "expectancy_per_trade", "bootstrap_mean_ci_low", "bootstrap_mean_ci_high", "deployable"] if c in strategy.columns]
 if profit_cols:
@@ -254,11 +285,56 @@ if not deploy.empty:
 if not cost.empty:
     st.subheader("Cost Decomposition")
     st.dataframe(cost, use_container_width=True)
-    if {"gross_pnl", "fees", "spread_cost", "vol_slippage", "impact_cost", "net_pnl"}.issubset(cost.columns):
-        cost_long = cost[["gross_pnl", "fees", "spread_cost", "vol_slippage", "impact_cost", "net_pnl"]].T.reset_index()
+    cost_cols_present = [c for c in ["gross_pnl", "fees", "spread_cost", "vol_slippage", "impact_cost", "unwind_cost", "net_pnl"] if c in cost.columns]
+    if set(["gross_pnl", "fees", "spread_cost", "vol_slippage", "impact_cost", "net_pnl"]).issubset(cost.columns):
+        cost_long = cost[cost_cols_present].T.reset_index()
         cost_long.columns = ["component", "value"]
         fig_cost = px.bar(cost_long, x="component", y="value", title="PnL Cost Decomposition")
         st.plotly_chart(fig_cost, use_container_width=True)
+
+if selected_strategy == "consistency_arb_v2" and not test_trades.empty:
+    st.subheader("Consistency Arb Diagnostics")
+    if "pair_direction" in test_trades.columns:
+        dir_stats = (
+            test_trades.groupby("pair_direction", observed=True)["trade_return"]
+            .agg(["count", "mean"])
+            .reset_index()
+            .rename(columns={"count": "n", "mean": "avg_return"})
+        )
+        st.dataframe(dir_stats, use_container_width=True)
+    if {"edge_raw", "expected_net_ev"}.issubset(test_trades.columns):
+        fig_edge = px.scatter(
+            test_trades.sample(min(len(test_trades), 3000), random_state=7),
+            x="edge_raw",
+            y="expected_net_ev",
+            color="pair_direction" if "pair_direction" in test_trades.columns else None,
+            title="Raw Edge vs Expected Net EV",
+        )
+        st.plotly_chart(fig_edge, use_container_width=True)
+    if {"ts", "net_pnl"}.issubset(test_trades.columns):
+        pts = test_trades.copy()
+        pts["ts"] = pd.to_datetime(pts["ts"], errors="coerce")
+        pnl_ts = pts.groupby("ts", observed=True)["net_pnl"].sum().sort_index().cumsum().reset_index()
+        pnl_ts["equity"] = 100000.0 + pnl_ts["net_pnl"]
+        fig_pnl = px.line(pnl_ts, x="ts", y="equity", title="Consistency Arb Test Equity Curve")
+        st.plotly_chart(fig_pnl, use_container_width=True)
+    if {"spread_yes_bps", "trade_return"}.issubset(test_trades.columns):
+        tt = test_trades.copy()
+        for col in ["spread_yes_bps", "min_pair_depth"]:
+            if col not in tt.columns:
+                continue
+            x = pd.to_numeric(tt[col], errors="coerce")
+            r = pd.to_numeric(tt["trade_return"], errors="coerce")
+            valid = x.notna() & r.notna()
+            if int(valid.sum()) < 20:
+                continue
+            x = x.loc[valid]
+            r = r.loc[valid]
+            bins = pd.qcut(x.rank(method="first"), q=min(10, x.nunique()), labels=False, duplicates="drop") if x.nunique() > 1 else pd.Series(0, index=x.index)
+            g = pd.DataFrame({"bin": bins, "trade_return": r}).groupby("bin", observed=True)["trade_return"].agg(["count", "mean"]).reset_index()
+            g.columns = ["decile", "n", "avg_return"]
+            st.caption(f"Performance by {col} decile")
+            st.dataframe(g, use_container_width=True)
 
 if not test_trades.empty and "trade_return" in test_trades.columns:
     st.subheader("Performance by Regime")

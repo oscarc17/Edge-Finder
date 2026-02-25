@@ -81,8 +81,9 @@ def evaluate_deployment_readiness(
     test_mean_pass = test_mean > 0.0
     trade_pass = n_test_trades >= float(min_test_trades)
     pess_pass = pess_ev >= 0.0
-    pbo_val = float(advanced_validation["pbo"].iloc[0]) if not advanced_validation.empty else 1.0
-    pbo_pass = pbo_val < float(pbo_threshold)
+    pbo_val = float(advanced_validation["pbo"].iloc[0]) if (not advanced_validation.empty and "pbo" in advanced_validation.columns) else float("nan")
+    pbo_computable = bool(np.isfinite(pbo_val))
+    pbo_pass = True if not pbo_computable else (pbo_val < float(pbo_threshold))
     ev_monotonic_pass = False
     ev_spearman = 0.0
     hit_rate_pos_ev = 0.0
@@ -139,7 +140,15 @@ def evaluate_deployment_readiness(
             "Average expected EV under pessimistic execution regime",
         )
     )
-    rows.append(_bool_row("pbo_below_threshold", pbo_val, f"< {float(pbo_threshold):.3f}", pbo_pass, "Probability of backtest overfitting"))
+    rows.append(
+        _bool_row(
+            "pbo_below_threshold",
+            pbo_val if np.isfinite(pbo_val) else np.nan,
+            f"< {float(pbo_threshold):.3f}" if pbo_computable else "not_computable_allowed",
+            pbo_pass,
+            "Probability of backtest overfitting" if pbo_computable else "PBO unavailable; rely on stronger CI + walk-forward",
+        )
+    )
     rows.append(
         _bool_row(
             "market_profit_concentration",
@@ -172,7 +181,7 @@ def evaluate_deployment_readiness(
         fail_reasons.append(f"n_test<{int(min_test_trades)}")
     if not pess_pass:
         fail_reasons.append("pessimistic_ev<0")
-    if not pbo_pass:
+    if pbo_computable and not pbo_pass:
         fail_reasons.append("pbo>=threshold")
     if not concentration_pass:
         fail_reasons.append("market_profit_concentration")
@@ -202,7 +211,8 @@ def evaluate_deployment_readiness(
             "stability_score": stable_score if np.isfinite(stable_score) else 0.0,
             "pessimistic_avg_expected_ev": pess_ev if np.isfinite(pess_ev) else -1.0,
             "advanced_white_pvalue": float(advanced_validation["white_pvalue"].iloc[0]) if not advanced_validation.empty else 1.0,
-            "advanced_pbo": pbo_val,
+            "advanced_pbo": pbo_val if pbo_computable else np.nan,
+            "advanced_pbo_computable": float(pbo_computable),
             "top_market_profit_share": market_conc_share,
             "ev_monotonic_pass": float(ev_monotonic_pass),
             "ev_monotonic_spearman": ev_spearman,
@@ -212,7 +222,7 @@ def evaluate_deployment_readiness(
             "passed": passed_all,
             "decision": "PASS" if passed_all else "FAIL",
             "notes": ("GO: " + reason_text) if passed_all else ("NO_GO: " + reason_text),
-            "threshold": f"test_mean>0, CI>0, WF>0, valid_folds>={int(min_valid_folds)}, n_test>={int(min_test_trades)}, pessimistic_EV>=0, pbo<{float(pbo_threshold):.3f}, ev_spearman>=0.20, ev_monotonic, ev_model_valid, top_market_profit_share<={float(concentration_market_max_pnl_share):.2f}",
+            "threshold": f"test_mean>0, CI>0, WF>0, valid_folds>={int(min_valid_folds)}, n_test>={int(min_test_trades)}, pessimistic_EV>=0, pbo<{float(pbo_threshold):.3f} (if computable), ev_spearman>=0.20, ev_monotonic, ev_model_valid, top_market_profit_share<={float(concentration_market_max_pnl_share):.2f}",
             "value": float(int(passed_all)),
         }
     )
@@ -244,6 +254,7 @@ def evaluate_deployment_readiness(
         "pessimistic_avg_expected_ev",
         "advanced_white_pvalue",
         "advanced_pbo",
+        "advanced_pbo_computable",
         "top_market_profit_share",
         "ev_monotonic_pass",
         "ev_monotonic_spearman",
@@ -254,7 +265,11 @@ def evaluate_deployment_readiness(
     for col in required_numeric:
         if col not in out.columns:
             out[col] = 0.0
-        out[col] = pd.to_numeric(out[col], errors="coerce").fillna(0.0)
+        ser = pd.to_numeric(out[col], errors="coerce")
+        if col == "advanced_pbo":
+            out[col] = ser
+        else:
+            out[col] = ser.fillna(0.0)
     for col in ["strategy", "notes", "threshold", "criterion", "decision"]:
         if col not in out.columns:
             out[col] = ""

@@ -31,6 +31,31 @@ def _panel_depth(conn) -> tuple[int, str | None, str | None]:
     return n_unique_ts, ts_min, ts_max
 
 
+def _both_legs_coverage(conn) -> float:
+    try:
+        row = conn.execute(
+            """
+            WITH x AS (
+                SELECT
+                    o.snapshot_ts,
+                    o.market_id,
+                    MAX(CASE WHEN lower(trim(coalesce(mo.outcome_label, '')))='yes' THEN 1 ELSE 0 END) AS has_yes,
+                    MAX(CASE WHEN lower(trim(coalesce(mo.outcome_label, '')))='no' THEN 1 ELSE 0 END) AS has_no
+                FROM orderbook_snapshots o
+                LEFT JOIN market_outcomes mo
+                  ON o.market_id = mo.market_id
+                 AND o.token_id = mo.token_id
+                WHERE o.snapshot_ts >= (SELECT MAX(snapshot_ts) - INTERVAL '24 hours' FROM orderbook_snapshots)
+                GROUP BY 1,2
+            )
+            SELECT AVG(CASE WHEN has_yes=1 AND has_no=1 THEN 1.0 ELSE 0.0 END) FROM x
+            """
+        ).fetchone()
+        return float(row[0]) if row and row[0] is not None else 0.0
+    except Exception:
+        return 0.0
+
+
 def _active_market_ids(conn, limit: int) -> list[str]:
     return [
         row[0]
@@ -131,20 +156,28 @@ def main() -> None:
         trade_count = 0
         holder_count = 0
         if args.with_trades:
-            res = pipeline.run_resolution_refresh()
-            res_count = int(res.resolutions)
-            active_ids = _active_market_ids(conn, args.trade_markets)
-            resolved_ids = _resolved_market_ids(conn, args.resolved_trade_markets)
-            trade_market_ids = list(dict.fromkeys(active_ids + resolved_ids))
-            trade_count = int(pipeline.ingest_trades(trade_market_ids))
-            holder_count = int(pipeline.ingest_holders(active_ids))
+            try:
+                res = pipeline.run_resolution_refresh()
+                res_count = int(res.resolutions)
+                active_ids = _active_market_ids(conn, args.trade_markets)
+                resolved_ids = _resolved_market_ids(conn, args.resolved_trade_markets)
+                trade_market_ids = list(dict.fromkeys(active_ids + resolved_ids))
+                trade_count = int(pipeline.ingest_trades(trade_market_ids))
+                try:
+                    holder_count = int(pipeline.ingest_holders(active_ids))
+                except Exception as exc:
+                    holder_count = 0
+                    print(f"warning: ingest_holders failed and was skipped: {type(exc).__name__}: {exc}")
+            except Exception as exc:
+                print(f"warning: trades/holders cycle failed and was skipped: {type(exc).__name__}: {exc}")
 
         n_unique_ts, ts_min, ts_max = _panel_depth(conn)
+        both_legs_cov = _both_legs_coverage(conn)
         print(
             f"[Cycle {cycle}/{total_cycles}] utc={cycle_ts} "
             f"markets={snap.markets} outcomes={snap.outcomes} books={snap.books} "
             f"resolutions={res_count} trades={trade_count} holders={holder_count} "
-            f"n_unique_ts={n_unique_ts} ts_min={ts_min} ts_max={ts_max}"
+            f"n_unique_ts={n_unique_ts} both_legs_cov_24h={both_legs_cov:.2%} ts_min={ts_min} ts_max={ts_max}"
         )
 
         elapsed = time.time() - start

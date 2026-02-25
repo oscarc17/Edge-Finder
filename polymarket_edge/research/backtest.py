@@ -14,6 +14,7 @@ from polymarket_edge.research.direction import (
     direction_sign_series,
     traded_side_series,
 )
+from polymarket_edge.research.execution import ExecutionCostInputs, compute_trade_return
 from polymarket_edge.research.semantics import attach_prediction_contract, normalize_prediction_space_series
 
 
@@ -285,16 +286,35 @@ def _simulate_one_horizon(
     exit_slippage = 0.5 * future_spread + impact + vol_slippage
     exit_price = (exit_mid - exit_slippage).clip(lower=0.001, upper=0.999)
 
-    gross_pnl = (exit_price - entry_price) * qty
     fee_rate = cfg.fee_bps / 10_000.0
-    fee = fee_rate * (entry_price * qty + exit_price * qty)
-    spread_component = (0.5 * spread + 0.5 * future_spread) * qty
-    impact_component = (impact + impact) * qty
-    vol_slippage_component = (vol_slippage + vol_slippage) * qty
-    net_pnl = gross_pnl - fee
-    notional = (entry_price * qty).clip(lower=1.0)
-    trade_ret = net_pnl / notional.clip(lower=1.0)
-    gross_return = gross_pnl / notional.clip(lower=1.0)
+    exec_calc = compute_trade_return(
+        mid_yes,
+        future_mid_yes,
+        direction_label,
+        ExecutionCostInputs(
+            fee_rate=float(fee_rate),
+            entry_spread=0.5 * spread,
+            exit_spread=0.5 * future_spread,
+            entry_impact=impact,
+            exit_impact=impact,
+            entry_vol_slippage=vol_slippage,
+            exit_vol_slippage=vol_slippage,
+        ),
+        qty=qty,
+        prices_are_yes_mid=True,
+        min_notional=1.0,
+    )
+    entry_price = pd.to_numeric(exec_calc["entry_price"], errors="coerce").fillna(entry_price)
+    exit_price = pd.to_numeric(exec_calc["exit_price"], errors="coerce").fillna(exit_price)
+    gross_pnl = pd.to_numeric(exec_calc["gross_pnl"], errors="coerce").fillna(0.0)
+    fee = pd.to_numeric(exec_calc["fees"], errors="coerce").fillna(0.0)
+    spread_component = pd.to_numeric(exec_calc["spread_component"], errors="coerce").fillna(0.0)
+    impact_component = pd.to_numeric(exec_calc["impact_component"], errors="coerce").fillna(0.0)
+    vol_slippage_component = pd.to_numeric(exec_calc["vol_slippage_component"], errors="coerce").fillna(0.0)
+    net_pnl = pd.to_numeric(exec_calc["net_pnl"], errors="coerce").fillna(0.0)
+    notional = pd.to_numeric(exec_calc["notional"], errors="coerce").fillna(1.0).clip(lower=1.0)
+    trade_ret = pd.to_numeric(exec_calc["trade_return"], errors="coerce").fillna(0.0)
+    gross_return = pd.to_numeric(exec_calc["gross_return"], errors="coerce").fillna(0.0)
     realized_slippage = (entry_price - mid)
     liquidity_fill_proxy = np.minimum(1.0, np.log1p(recent_volume + 1.0) / np.log1p(target_notional + 1.0))
     spread_fill_proxy = np.exp(-spread_bps / 250.0)
@@ -352,14 +372,22 @@ def _simulate_one_horizon(
     if "model_pred_future_mid" in df.columns and pd.to_numeric(df["model_pred_future_mid"], errors="coerce").notna().sum() > 0:
         model_future_mid_yes = pd.to_numeric(df["model_pred_future_mid"], errors="coerce").fillna(mid_yes).clip(lower=1e-6, upper=1 - 1e-6)
     else:
-        fallback_move = pd.to_numeric(df.get(f"expected_move_size_{horizon}", df.get("expected_move_size", np.nan)), errors="coerce")
-        if pd.to_numeric(fallback_move, errors="coerce").notna().sum() == 0:
+        fallback_move_src = df.get(f"expected_move_size_{horizon}", df.get("expected_move_size", np.nan))
+        if isinstance(fallback_move_src, pd.Series):
+            fallback_move = pd.to_numeric(fallback_move_src, errors="coerce")
+        else:
+            fallback_move = pd.Series(float(fallback_move_src) if pd.notna(fallback_move_src) else np.nan, index=df.index, dtype=float)
+        if fallback_move.notna().sum() == 0:
             global_move = float((future_mid_yes - mid_yes).abs().mean()) if len(df) else 0.01
             fallback_move = pd.Series(global_move, index=df.index)
         fallback_move = pd.to_numeric(fallback_move, errors="coerce").fillna(0.01).clip(lower=1e-4, upper=0.40)
         model_future_mid_yes = (mid_yes + pd.to_numeric(df["signal"], errors="coerce").fillna(0.0).clip(-1.0, 1.0) * fallback_move).clip(lower=1e-6, upper=1 - 1e-6)
 
-    move_size_est = pd.to_numeric(df.get(f"expected_move_size_{horizon}", df.get("expected_move_size", np.nan)), errors="coerce")
+    move_size_src = df.get(f"expected_move_size_{horizon}", df.get("expected_move_size", np.nan))
+    if isinstance(move_size_src, pd.Series):
+        move_size_est = pd.to_numeric(move_size_src, errors="coerce")
+    else:
+        move_size_est = pd.Series(float(move_size_src) if pd.notna(move_size_src) else np.nan, index=df.index, dtype=float)
     if move_size_est.notna().sum() == 0:
         move_size_est = pd.Series(float((future_mid_yes - mid_yes).abs().mean()) if len(df) else 0.01, index=df.index)
     move_size_est = move_size_est.fillna(0.01).clip(lower=1e-4, upper=0.40)

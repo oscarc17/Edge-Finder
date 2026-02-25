@@ -38,6 +38,10 @@ def score_edges(
     frame["test_trade_count"] = pd.to_numeric(trade_raw, errors="coerce").fillna(0.0)
     frame["walkforward_valid_folds"] = pd.to_numeric(folds_raw, errors="coerce").fillna(0.0)
     frame["label_degenerate"] = pd.to_numeric(label_raw, errors="coerce").fillna(0.0)
+    hedged_raw = frame["hedged_fill_rate"] if "hedged_fill_rate" in frame.columns else pd.Series(1.0, index=frame.index)
+    cost_dom_raw = frame["cost_dominance_ratio"] if "cost_dominance_ratio" in frame.columns else pd.Series(0.0, index=frame.index)
+    frame["hedged_fill_rate"] = pd.to_numeric(hedged_raw, errors="coerce").fillna(1.0).clip(lower=0.0, upper=1.0)
+    frame["cost_dominance_ratio"] = pd.to_numeric(cost_dom_raw, errors="coerce").fillna(0.0).clip(lower=0.0)
     frame["p_value"] = frame["p_value"].clip(lower=1e-12)
 
     def _p_value_pos(row: pd.Series) -> float:
@@ -81,6 +85,12 @@ def score_edges(
     folds_score = np.clip(frame["walkforward_valid_folds"] / 4.0, 0.0, 1.0)
     label_score = np.where(frame["label_degenerate"] > 0.5, 0.0, 1.0)
     frame["reliability_score"] = 0.5 * trades_score + 0.3 * folds_score + 0.2 * label_score
+    # Structural-arb quality hooks (harmless defaults for non-arb strategies).
+    frame["reliability_score"] = (
+        frame["reliability_score"]
+        * (0.75 + 0.25 * frame["hedged_fill_rate"])
+        * np.where(frame["cost_dominance_ratio"] <= 1.0, 1.0, 1.0 / (1.0 + (frame["cost_dominance_ratio"] - 1.0)))
+    ).clip(lower=0.0, upper=1.0)
 
     frame["edge_score_pro"] = (
         w_profitability * frame["profitability_score"]
@@ -93,6 +103,10 @@ def score_edges(
     frame.loc[frame["test_trade_count"] < 50.0, "edge_score_pro"] = frame["edge_score_pro"] * 0.25
     frame.loc[frame["walkforward_valid_folds"] < 2.0, "edge_score_pro"] = frame["edge_score_pro"] * 0.25
     frame.loc[frame["label_degenerate"] > 0.5, "edge_score_pro"] = 0.0
+    if "hedged_fill_rate" in frame.columns:
+        frame.loc[frame["hedged_fill_rate"] < 0.25, "edge_score_pro"] = frame["edge_score_pro"] * 0.5
+    if "cost_dominance_ratio" in frame.columns:
+        frame.loc[frame["cost_dominance_ratio"] > 1.0, "edge_score_pro"] = frame["edge_score_pro"] * 0.5
     # Legacy compatibility column.
     frame["edge_score"] = frame["edge_score_pro"]
     return frame.sort_values("edge_score_pro", ascending=False)

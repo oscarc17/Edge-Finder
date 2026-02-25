@@ -56,6 +56,8 @@ def attach_prediction_contract(
     prediction_space: PredictionSpace | str | None = None,
     horizon: int | float | None = None,
     expected_return_col: str | None = None,
+    horizon_steps: int | float | None = None,
+    horizon_seconds: int | float | None = None,
 ) -> pd.DataFrame:
     if frame.empty:
         return frame.copy()
@@ -85,15 +87,34 @@ def attach_prediction_contract(
             out["horizon"] = pd.to_numeric(out["model_horizon"], errors="coerce").fillna(horizon if horizon is not None else 1.0)
         else:
             out["horizon"] = float(horizon if horizon is not None else 1.0)
-    if expected_return_col is not None and expected_return_col in out.columns and "expected_return" not in out.columns:
-        out["expected_return"] = pd.to_numeric(out[expected_return_col], errors="coerce").fillna(0.0)
+    if "horizon_steps" not in out.columns:
+        if horizon_steps is not None:
+            out["horizon_steps"] = float(horizon_steps)
+        elif "model_horizon" in out.columns:
+            out["horizon_steps"] = pd.to_numeric(out["model_horizon"], errors="coerce").fillna(1.0)
+        else:
+            out["horizon_steps"] = pd.to_numeric(out["horizon"], errors="coerce").fillna(1.0)
+    if "horizon_seconds" not in out.columns:
+        if horizon_seconds is not None:
+            out["horizon_seconds"] = float(horizon_seconds)
+        else:
+            out["horizon_seconds"] = pd.to_numeric(out["horizon_steps"], errors="coerce").fillna(1.0) * 3600.0
+    if expected_return_col is not None and expected_return_col in out.columns:
+        if "expected_return" not in out.columns:
+            out["expected_return"] = pd.to_numeric(out[expected_return_col], errors="coerce").fillna(0.0)
+        if "expected_net_return" not in out.columns:
+            out["expected_net_return"] = pd.to_numeric(out[expected_return_col], errors="coerce").fillna(0.0)
+    if "expected_return" in out.columns and "expected_net_return" not in out.columns:
+        out["expected_net_return"] = pd.to_numeric(out["expected_return"], errors="coerce").fillna(0.0)
+    if "expected_net_return" in out.columns and "expected_return" not in out.columns:
+        out["expected_return"] = pd.to_numeric(out["expected_net_return"], errors="coerce").fillna(0.0)
     return out
 
 
 def validate_prediction_contract(frame: pd.DataFrame, *, require_expected_return: bool = False) -> tuple[bool, list[str]]:
-    required = ["prediction_space", "horizon", "direction"]
+    required = ["prediction_space", "horizon", "direction", "horizon_steps", "horizon_seconds"]
     if require_expected_return:
-        required.append("expected_return")
+        required.append("expected_net_return")
     missing = [c for c in required if c not in frame.columns]
     if missing:
         return False, [f"missing:{c}" for c in missing]
@@ -106,7 +127,7 @@ def validate_prediction_contract(frame: pd.DataFrame, *, require_expected_return
     if spaces.isna().any():
         issues.append("invalid_prediction_space")
     if require_expected_return:
-        er = pd.to_numeric(frame["expected_return"], errors="coerce")
+        er = pd.to_numeric(frame["expected_net_return"], errors="coerce")
         if er.isna().any():
             issues.append("expected_return_non_numeric")
     return len(issues) == 0, issues
@@ -131,4 +152,3 @@ def expected_return_comparable(
         return False
     ratio = exp_q / max(real_q, 1e-9)
     return bool(1e-3 <= ratio <= 1e3)
-

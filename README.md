@@ -132,6 +132,26 @@ V2 adds independently deployable strategy modules with:
 - EV accounting (expected vs realized edge)
 - Automated GO/NO-GO deployment gating
 - Cross-strategy portfolio analytics (risk parity / mean-variance / max-Sharpe / Kelly)
+- Mechanical consistency / parity arbitrage research (YES/NO complement parity + paired execution simulation)
+
+### Actual Edge: Consistency Arbitrage (Mechanical)
+
+This repo now includes a production-style `consistency_arb_v2` strategy focused on structural binary-market constraints:
+
+- Complement parity within a binary market:
+  - `ask_yes + ask_no < 1` (buy both legs)
+  - `bid_yes + bid_no > 1` (sell both legs, if supported in simulation)
+- Paired execution simulation:
+  - per-leg fill probabilities
+  - pair-fill vs one-leg fill risk
+  - unwind penalty for unhedged fills
+  - pessimistic execution regime sensitivity
+
+Important:
+
+- The strategy is designed to fail safely when no executable parity violations exist after costs.
+- A result of `0` trades is a valid outcome and should be interpreted as “no mechanical arb observed under current filters/cost assumptions”, not as alpha.
+- `arb_data_quality.csv` is written before the run and will fail-fast if YES/NO both-leg coverage is too low.
 
 ### V2 Run Command
 

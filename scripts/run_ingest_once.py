@@ -68,6 +68,26 @@ def main() -> None:
     holder_count = pipeline.ingest_holders(active_market_ids)
     print(f"Trades ingested={trade_count}, holders ingested={holder_count}")
 
+    arb_cov_row = conn.execute(
+        """
+        WITH x AS (
+            SELECT
+                o.snapshot_ts,
+                o.market_id,
+                MAX(CASE WHEN lower(trim(coalesce(mo.outcome_label, '')))='yes' THEN 1 ELSE 0 END) AS has_yes,
+                MAX(CASE WHEN lower(trim(coalesce(mo.outcome_label, '')))='no' THEN 1 ELSE 0 END) AS has_no
+            FROM orderbook_snapshots o
+            LEFT JOIN market_outcomes mo
+              ON o.market_id = mo.market_id
+             AND o.token_id = mo.token_id
+            GROUP BY 1,2
+        )
+        SELECT AVG(CASE WHEN has_yes=1 AND has_no=1 THEN 1.0 ELSE 0.0 END) FROM x
+        """
+    ).fetchone()
+    both_legs_cov = float(arb_cov_row[0]) if arb_cov_row and arb_cov_row[0] is not None else 0.0
+    print(f"Complement both-legs coverage={both_legs_cov:.2%}")
+
     ts_row = conn.execute(
         """
         SELECT

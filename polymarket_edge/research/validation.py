@@ -259,6 +259,12 @@ def run_walkforward(
     context: dict[str, Any] | None = None,
     walk_cfg: WalkForwardConfig = WalkForwardConfig(),
 ) -> dict[str, pd.DataFrame]:
+    def _bt_grid(frame: pd.DataFrame, thresholds: list[float], cfg: Any):
+        runner = getattr(strategy, "run_backtest_grid", None)
+        if callable(runner):
+            return runner(frame, thresholds=thresholds, cfg=cfg)
+        return run_backtest_grid(frame, thresholds=thresholds, cfg=cfg)
+
     def _empty_walk_result() -> dict[str, pd.DataFrame]:
         empty_folds = pd.DataFrame(
             columns=[
@@ -412,7 +418,7 @@ def run_walkforward(
             except Exception:
                 pass
 
-        train_summary, _train_trades = run_backtest_grid(
+        train_summary, _train_trades = _bt_grid(
             train,
             thresholds=list(strategy.config.signal_thresholds),
             cfg=backtest_config,
@@ -440,7 +446,7 @@ def run_walkforward(
         base_row["holding_period"] = float(hp)
         base_row["n_trades_train"] = float(best.get("trade_count", 0.0))
 
-        test_summary, test_trades = run_backtest_grid(test, thresholds=[threshold], cfg=backtest_config)
+        test_summary, test_trades = _bt_grid(test, thresholds=[threshold], cfg=backtest_config)
         chosen = test_summary[
             (test_summary["threshold"] == threshold) & (test_summary["holding_period"] == float(hp))
         ]

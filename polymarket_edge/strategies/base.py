@@ -667,15 +667,19 @@ class BaseStrategy:
                 ]
             )
         t = trades.copy()
+        def _sum_col(col: str) -> float:
+            src = t[col] if col in t.columns else pd.Series(0.0, index=t.index)
+            return float(pd.to_numeric(src, errors="coerce").fillna(0.0).sum())
         return pd.DataFrame(
             [
                 {
-                    "gross_pnl": float(pd.to_numeric(t.get("gross_pnl", 0.0), errors="coerce").fillna(0.0).sum()),
-                    "fees": float(pd.to_numeric(t.get("fees", 0.0), errors="coerce").fillna(0.0).sum()),
-                    "spread_cost": float(pd.to_numeric(t.get("spread_component", 0.0), errors="coerce").fillna(0.0).sum()),
-                    "vol_slippage": float(pd.to_numeric(t.get("vol_slippage_component", 0.0), errors="coerce").fillna(0.0).sum()),
-                    "impact_cost": float(pd.to_numeric(t.get("impact_component", 0.0), errors="coerce").fillna(0.0).sum()),
-                    "net_pnl": float(pd.to_numeric(t.get("net_pnl", 0.0), errors="coerce").fillna(0.0).sum()),
+                    "gross_pnl": _sum_col("gross_pnl"),
+                    "fees": _sum_col("fees"),
+                    "spread_cost": _sum_col("spread_component"),
+                    "vol_slippage": _sum_col("vol_slippage_component"),
+                    "impact_cost": _sum_col("impact_component"),
+                    "unwind_cost": _sum_col("unwind_penalty_component"),
+                    "net_pnl": _sum_col("net_pnl"),
                     "trade_count": float(len(t)),
                 }
             ]
