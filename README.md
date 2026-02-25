@@ -1,92 +1,358 @@
-# Polymarket Edge-Finder (Polymarket Quant Research)
+# Polymarket Edge Finder (Polymarket Quant Research Scaffold)
 
-Systematic research framework for detecting statistically testable edges in Polymarket prediction markets.
+Edge-Finder is a Python research framework for systematic Polymarket strategy research with a DuckDB warehouse, execution-aware backtests, validation gates, and dashboards.
 
-## What This Includes
+This repo is designed to reject weak strategies. A `FAIL`, `NO EDGE`, `INCONCLUSIVE`, or `0 trades` result is a valid research outcome.
 
-- Data pipeline for:
-  - Active market metadata (Gamma API)
-  - Order books / spreads / liquidity snapshots (CLOB API)
-  - Trades and holders (Data API)
-  - Resolution outcomes
-  - Derived implied probabilities and lagged returns
-- Edge research modules:
-  - Cross-market inefficiencies
-  - Resolution-rule mispricing
-  - Liquidity premium
-  - Momentum vs mean reversion
-  - Whale behavior
-- Backtesting engine:
-  - Fees + slippage + impact
-  - PnL / Sharpe / max drawdown
-  - Category-level PnL
-- Edge scoring:
-  - Significance + capacity + stability
-- Streamlit dashboard starter
+## What This Repo Does
 
-## Official API Endpoints Used
+- Ingests Polymarket data from:
+  - Gamma markets metadata
+  - CLOB order books / prices
+  - Data API trades and holders
+  - Simplified markets (resolution truth / winner flags)
+- Stores normalized data in DuckDB (`markets`, `market_outcomes`, `orderbook_snapshots`, `trades`, `holders`, `resolutions`, etc.)
+- Builds time-series feature panels with time-aware targets
+- Runs multiple research strategies (behavioral + structural)
+- Simulates execution costs (spread, impact, slippage, fees) and fill models
+- Runs validation (walk-forward, bootstrap, diagnostics, deployment gates)
+- Produces V2 artifacts and Streamlit dashboards
 
-- Gamma markets: `GET /markets`
-- CLOB books: `POST /books`
-- CLOB prices: `POST /prices`
-- CLOB simplified markets: `GET /sampling-simplified-markets`
-- Data API trades: `GET /trades`
-- Data API holders: `GET /holders`
+## What It Does Not Do
 
-## Database Schema
+- It does not guarantee live profitability.
+- It does not assume mid-price fills.
+- It does not weaken validation gates to force a positive result.
 
-Primary tables created in `polymarket_edge/db.py`:
+## Core Research Principles (Implemented)
 
-- `markets`: market metadata + lifecycle fields
-- `market_outcomes`: token ids per outcome
-- `orderbook_snapshots`: best bid/ask, mid, spread, depth, liquidity score
-- `trades`: market trades (wallet-level)
-- `holders`: top holders snapshots
-- `resolutions`: winner token + resolution timestamp
-- `returns`: lagged token returns
-- `edge_results`: structured metrics from edge modules
-- `backtest_runs`, `backtest_timeseries`, `backtest_trades`: simulation outputs
+- Time-aware returns and targets (not row-lag assumptions)
+- Explicit resolution truth preferred over heuristics
+- Fee-aware expected value and backtests (observed fee rates when available, otherwise fee regime curves/fallback)
+- Structural edge research (complement parity / consistency arb) with paired-leg backtests
+- Strict GO/NO-GO gating
 
-## Quick Start
+## Data Sources and API Endpoints
+
+- Gamma API:
+  - `GET /markets`
+- CLOB API:
+  - `POST /books`
+  - `POST /prices`
+  - `GET /prices-history`
+  - `GET /simplified-markets` (primary resolution truth input)
+  - `GET /sampling-simplified-markets` (optional sampling endpoint)
+- Data API:
+  - `GET /trades`
+  - `GET /holders`
+
+## Database Schema (High Level)
+
+Defined in `polymarket_edge/db.py`.
+
+Key tables:
+
+- `markets`
+  - market metadata and lifecycle fields
+  - fee metadata fields such as `fee_enabled`, `fee_regime`, `fee_regime_source`
+- `market_outcomes`
+  - token ids / labels / winner flags by outcome
+- `orderbook_snapshots`
+  - best bid/ask, mid, spread, depth, liquidity score by token and timestamp
+- `trades`
+  - market trades with normalized fields
+  - includes `fee_rate_bps` and `fee_rate_source` when present in API payloads
+- `holders`
+  - periodic holder snapshots
+- `resolutions`
+  - winner token, resolved timestamp, source, and `label_source` (`explicit` or `inferred`)
+- `returns`
+  - time-aware lagged returns (`1h`, `6h`, `24h`)
+
+## Installation
+
+Windows PowerShell:
+
+```powershell
+python -m venv .venv
+. .venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+python scripts/bootstrap_db.py
+```
+
+macOS/Linux:
 
 ```bash
 python -m venv .venv
-. .venv/Scripts/activate
+source .venv/bin/activate
 pip install -r requirements.txt
 python scripts/bootstrap_db.py
+```
+
+## Quick Start (V1 + V2)
+
+1. Ingest a one-off snapshot + some trades/holders
+2. Refresh resolution truth
+3. Run V2 research
+4. Open dashboard
+
+```powershell
 python scripts/run_ingest_once.py --max-markets 800 --trade-markets 100 --resolved-trade-markets 100
+python scripts/refresh_resolutions.py --max-rows 5000
+python scripts/backfill_resolved.py --max-rows 5000
+python scripts/run_research_v2.py
+python -m streamlit run polymarket_edge/dashboard_v2.py
+```
+
+If you want the older pipeline:
+
+```powershell
 python scripts/run_research.py
 python -m streamlit run polymarket_edge/dashboard.py
 ```
 
-For time-series depth (recommended before V2 research), run continuous ingestion:
+## Recommended Research Workflow (V2)
 
-```bash
-python scripts/run_ingest_loop.py --minutes 5 --hours 12 --max-markets 800 --trade-markets 200 --resolved-trade-markets 200
+This is the workflow other users should follow.
+
+### 1) Collect enough time-series data
+
+The V2 pipeline has an integrity gate. If you do not have enough timestamps / markets / snapshots (or enough YES/NO two-leg coverage for parity research), the run will fail fast and write `insufficient_data_report.csv`.
+
+Snapshot collection (recommended):
+
+```powershell
+python scripts/collect_snapshots.py --config configs/collection.yaml
 ```
 
-Or use the dedicated snapshot collector:
+Direct collector command (example):
 
-```bash
-python scripts/collect_snapshots.py --minutes 5 --hours 24 --max-markets 800
+```powershell
+python scripts/collect_snapshots.py --minutes 5 --hours 24 --max-markets 1000 --with-trades --trade-markets 200 --resolved-trade-markets 200
 ```
 
-For fast timestamp accumulation without trades/resolutions:
+Fast dev iteration (likely insufficient for full V2, but useful for smoke tests):
 
-```bash
-python scripts/run_ingest_loop.py --minutes 0.1 --hours 2 --max-markets 100 --snapshot-only
+```powershell
+python scripts/collect_snapshots.py --minutes 0.5 --hours 1 --max-markets 300 --max-cycles 120
 ```
 
-## Research Plan (Practical)
+### 2) Refresh resolution truth (explicit winner flags)
 
-1. Build historical panel
-2. Run modules A-E daily after ingestion
-3. Rank edges by score (`significance`, `capacity`, `stability`)
-4. Backtest only top edges with robust cost model
-5. Promote to paper trading
-6. Promote to capped live deployment
+This uses `GET /simplified-markets` and stores explicit winner truth when available.
 
-## Project Structure
+```powershell
+python scripts/refresh_resolutions.py --max-rows 5000
+```
+
+Artifacts written:
+
+- `data/research_v2/resolution_truth_audit.csv`
+- `data/research_v2/resolution_winner_flag_exceptions.csv`
+
+### 3) Backfill resolved markets
+
+```powershell
+python scripts/backfill_resolved.py --max-rows 5000
+```
+
+This refreshes:
+
+- `resolutions`
+- `resolved_markets`
+- `markets`
+- `market_outcomes`
+
+### 4) Run V2 research
+
+```powershell
+python scripts/run_research_v2.py
+```
+
+Outputs are written to `data/research_v2/`.
+
+### 5) Inspect results in the dashboard
+
+```powershell
+python -m streamlit run polymarket_edge/dashboard_v2.py
+```
+
+## Standalone Strategy Runs
+
+You can run one strategy independently and write artifacts to `data/research_v2_single/<strategy>/`.
+
+```powershell
+python scripts/run_strategy.py --strategy consistency_arb --model-type heuristic
+python scripts/run_strategy.py --strategy consistency_arb_maker --model-type heuristic
+python scripts/run_strategy.py --strategy whale --model-type auto
+```
+
+Supported `--strategy` values:
+
+- `consistency_arb`
+- `consistency_arb_maker`
+- `cross_market`
+- `resolution_rules`
+- `liquidity_premium`
+- `momentum`
+- `whale`
+
+## Structural Edge Modules (Current Focus)
+
+### Complement Parity / Consistency Arb
+
+This repo includes structural parity research and execution-aware backtests:
+
+- `polymarket_edge/edges/consistency_arb.py`
+  - generates complement parity and related constraint candidates
+- `polymarket_edge/strategies/consistency_arb.py` (`consistency_arb_v2`)
+  - paired taker-style parity backtest with leg-risk modeling
+- `polymarket_edge/strategies/consistency_arb_maker.py` (`consistency_arb_maker_v1`)
+  - maker/passive parity research with conservative fill simulation and hedge/bailout logic
+
+Important:
+
+- `0 trades` is a valid outcome if no executable opportunities survive costs / fill assumptions.
+- This should be interpreted as "no observed structural arb under current filters and execution model", not as a pipeline bug.
+
+## V2 Artifacts and Reports
+
+### Top-Level (`data/research_v2/`)
+
+- `strategy_report.csv`
+- `edge_scores_v2.csv`
+- `deployment_readiness.csv`
+- `deployment_readiness_summary.csv`
+- `readiness_report.csv`
+- `live_opportunities.csv`
+- `integrity_report_pre.csv`, `integrity_report_post.csv`
+- `insufficient_data_report.csv` (only when the integrity gate fails)
+- `fee_regime_coverage.csv`
+- `sampling_interval_audit.csv`
+- `resolution_truth_audit.csv`
+- `market_links.csv`, `market_links_summary.csv`
+- `consistency_arb_*.csv`, `microstructure_mm_*.csv`, `resolution_mechanics_*.csv`
+
+### Per-Strategy Folder (`data/research_v2/<strategy>/`)
+
+Examples:
+
+- `signals.csv`
+- `train_trades.csv`, `test_trades.csv`
+- `train_summary.csv`, `test_summary.csv`
+- `validation.csv`
+- `walkforward_folds.csv`, `walkforward_summary.csv`
+- `advanced_validation.csv`
+- `ev_diagnostics.csv`
+- `execution_sensitivity.csv`
+- `execution_calibration.csv`
+- `cost_decomposition.csv`
+- `deployment_readiness.csv`
+- `capacity.csv`
+- `feature_importance.csv`
+
+Maker parity strategies can also produce:
+
+- `candidates.csv`
+- `paired_trades.csv`
+- `completed_sets.csv`
+- `maker_fill_diagnostics.csv`
+- `maker_fill_diagnostics_summary.csv`
+
+## Research Integrity and Deployment Gates (How to Read Results)
+
+### PASS means
+
+The strategy passed the configured statistical and execution checks on current data, including checks like:
+
+- positive out-of-sample mean return
+- positive CI lower bound (bootstrap / block bootstrap where applicable)
+- positive walk-forward mean with enough valid folds
+- EV diagnostics alignment (e.g., Spearman / monotonicity)
+- survival under pessimistic execution assumptions
+- no extreme profit concentration in one market
+
+### PASS does not mean
+
+- guaranteed live profitability
+- infinite capacity
+- no regime risk
+
+It means the strategy is a candidate for controlled paper trading / capped live experimentation.
+
+### FAIL / NO EDGE / INCONCLUSIVE
+
+These are valid outputs.
+
+- `FAIL` / `NO EDGE`
+  - The edge did not survive costs, execution realism, or OOS validation.
+- `INCONCLUSIVE`
+  - Usually means not enough trades, no executed fills, or insufficient data to estimate robustness.
+
+## Timebase and Label Semantics (Important)
+
+- Returns and forward targets are time-based, not row-based.
+- `holding_period` and target columns are interpreted using actual timestamps (irregular sampling supported).
+- Resolution labels default to `label_source='explicit'` when training on outcomes.
+- Inferred labels exist for fallback / audit but are not the default source of truth.
+
+## Fees and Cost Modeling (Important)
+
+- Do not assume a single global fee.
+- V2 prefers observed `fee_rate_bps` from trade payloads when available.
+- Otherwise it uses fee regime curves (`FEE_FREE`, `CRYPTO_5_15_MIN`, `SPORTS_FEE_CURVE`, etc.).
+- When fees are unknown, the code falls back conservatively and logs warnings in relevant paths.
+
+## Troubleshooting
+
+### `streamlit` is not recognized
+
+Use:
+
+```powershell
+python -m streamlit run polymarket_edge/dashboard_v2.py
+```
+
+### DuckDB file lock (`Cannot open file ... polymarket.duckdb`)
+
+Another process is using the DB (collector, notebook, dashboard, or another research run).
+
+Close the process and rerun:
+
+```powershell
+python scripts/run_research_v2.py
+```
+
+### V2 exits early with `insufficient_data_report.csv`
+
+You do not have enough data for a meaningful run.
+
+Collect more snapshots and rerun:
+
+```powershell
+python scripts/collect_snapshots.py --minutes 5 --hours 24 --max-markets 1000 --with-trades --trade-markets 200 --resolved-trade-markets 200
+python scripts/run_research_v2.py
+```
+
+### Collector crashes on network/API disconnects
+
+Transient API/network failures happen during long runs. Re-run the collector; existing snapshots already written to DuckDB are preserved.
+
+## Repro / Validation Commands
+
+Run tests:
+
+```powershell
+python -m unittest discover -s tests -p "test_*.py"
+```
+
+Run a quick syntax check:
+
+```powershell
+python -m py_compile polymarket_edge/db.py polymarket_edge/pipeline.py polymarket_edge/research/backtest.py
+```
+
+## Project Structure (High-Level)
 
 ```text
 polymarket_edge/
@@ -94,217 +360,55 @@ polymarket_edge/
   config.py
   db.py
   pipeline.py
-  features.py
+  fees.py
   scoring.py
   dashboard.py
+  dashboard_v2.py
   backtest/
     engine.py
     metrics.py
   edges/
+    consistency_arb.py
     cross_market.py
     liquidity_premium.py
+    microstructure_mm.py
     momentum_reversion.py
     resolution_rules.py
+    resolution_mechanics.py
     whale_behavior.py
+  research/
+    data.py
+    backtest.py
+    paired_backtest.py
+    validation.py
+    diagnostics.py
+    deployment.py
+    integrity.py
+    maker_execution.py
+    maker_parity_backtest.py
+  strategies/
+    base.py
+    consistency_arb.py
+    consistency_arb_maker.py
+    cross_market.py
+    liquidity_premium.py
+    momentum.py
+    resolution_rules.py
+    whale.py
 scripts/
   bootstrap_db.py
-  run_ingest_once.py
-  run_research.py
-```
-
-## Notes
-
-- This repo focuses on systematic, automatable strategies and excludes illegal/unethical behavior.
-- Production deployment should add retries/backoff, monitoring, and stricter execution safeguards.
-
-## Production Research V2
-
-V2 adds independently deployable strategy modules with:
-
-- Unified feature engineering
-- Parameterized signals + threshold optimization + model-based alpha
-- Independent backtests with multiple holding periods and execution realism
-- Statistical validation (walk-forward, bootstrap, t-test, Wilcoxon, stability, overfit gap)
-- Advanced validation (permutation test, White reality check, PBO)
-- Explainability (feature importance + strongest/weakest conditions)
-- Signal diagnostics (calibration, deciles, drift, model-vs-market attribution)
-- Capacity estimation
-- EV accounting (expected vs realized edge)
-- Automated GO/NO-GO deployment gating
-- Cross-strategy portfolio analytics (risk parity / mean-variance / max-Sharpe / Kelly)
-- Mechanical consistency / parity arbitrage research (YES/NO complement parity + paired execution simulation)
-
-### Actual Edge: Consistency Arbitrage (Mechanical)
-
-This repo now includes a production-style `consistency_arb_v2` strategy focused on structural binary-market constraints:
-
-- Complement parity within a binary market:
-  - `ask_yes + ask_no < 1` (buy both legs)
-  - `bid_yes + bid_no > 1` (sell both legs, if supported in simulation)
-- Paired execution simulation:
-  - per-leg fill probabilities
-  - pair-fill vs one-leg fill risk
-  - unwind penalty for unhedged fills
-  - pessimistic execution regime sensitivity
-
-Important:
-
-- The strategy is designed to fail safely when no executable parity violations exist after costs.
-- A result of `0` trades is a valid outcome and should be interpreted as “no mechanical arb observed under current filters/cost assumptions”, not as alpha.
-- `arb_data_quality.csv` is written before the run and will fail-fast if YES/NO both-leg coverage is too low.
-
-### V2 Run Command
-
-```bash
-python scripts/run_research_v2.py
-```
-
-Outputs are written to `data/research_v2/`.
-`run_research_v2.py` now runs a Research Integrity gate first and fails fast with `insufficient_data_report.csv` when data depth / market coverage / snapshot count is not sufficient.
-
-Run one strategy independently:
-
-```bash
-python scripts/run_strategy.py --strategy whale
-```
-
-View the V2 dashboard:
-
-```bash
-python -m streamlit run polymarket_edge/dashboard_v2.py
-```
-
-### V2 Architecture
-
-```text
-polymarket_edge/research/
-  data.py            # feature panel + targets
-  backtest.py        # microstructure-aware multi-horizon simulation
-  validation.py      # walk-forward, bootstrap CIs, stability, sensitivity
-  diagnostics.py     # calibration, deciles, drift, attribution
-  advanced_validation.py  # permutation, White RC, PBO
-  deployment.py      # GO/NO-GO readiness checks
-  explain.py         # feature importance + condition diagnostics
-  capacity.py        # deployable capital estimates
-  portfolio.py       # multi-method portfolio optimizer + backtest
-polymarket_edge/models/
-  base.py            # AlphaModel interface
-  logistic.py        # regularized logistic baseline
-  gradient_boosting.py
-  bayesian.py        # prior+likelihood posterior update model
-  evaluation.py      # AUC/logloss/Brier model comparison
-  factory.py
-polymarket_edge/strategies/
-  base.py
-  cross_market.py
-  resolution_rules.py
-  liquidity_premium.py
-  momentum.py
-  whale.py
-scripts/
-  run_research_v2.py
   collect_snapshots.py
+  refresh_resolutions.py
   backfill_resolved.py
+  run_ingest_once.py
+  run_ingest_loop.py
+  run_research.py
+  run_research_v2.py
+  run_strategy.py
 ```
 
-### Suggested Parameter Ranges (V2)
+## Safety / Ethics
 
-- `signal_thresholds`: `[0.05, 0.10, 0.15, 0.20, 0.25]`
-- `holding_periods`: `[1, 3, 6, 12]` snapshots
-- `model_type`: `heuristic | logistic | gradient_boosting | bayesian | auto | ensemble`
-- `model_cv_splits`: `[3, 4, 5]`
-- `fee_bps`: `[10, 20, 30]`
-- `impact_coeff`: `[0.05, 0.10, 0.20]`
-- `max_participation`: `[0.05, 0.10, 0.15, 0.20]`
-- `vol_slippage_coeff`: `[0.10, 0.25, 0.50]`
-- `fill_beta_spread`: `[1.0, 2.0, 3.0]`
-- `train_ratio`: `[0.60, 0.70, 0.80]`
-
-### V2 Performance Report Files
-
-- `strategy_report.csv`: strategy-level outcomes
-- `parameter_ranges.csv`: active config by strategy
-- `edge_scores_v2.csv`: scored edges (significance/capacity/stability)
-- `<strategy>/train_summary.csv`, `<strategy>/test_summary.csv`
-- `<strategy>/validation.csv`
-- `<strategy>/walkforward_folds.csv`
-- `<strategy>/walkforward_summary.csv`
-- `<strategy>/stability_time.csv`
-- `<strategy>/stability_category.csv`
-- `<strategy>/parameter_sensitivity.csv`
-- `<strategy>/filter_impact.csv`
-- `<strategy>/feature_importance.csv`
-- `<strategy>/model_comparison.csv`
-- `<strategy>/model_feature_importance.csv`
-- `<strategy>/edge_attribution.csv`
-- `<strategy>/calibration_curve.csv`
-- `<strategy>/signal_deciles.csv`
-- `<strategy>/feature_drift.csv`
-- `<strategy>/model_vs_market.csv`
-- `<strategy>/ev_diagnostics.csv`
-- `<strategy>/advanced_validation.csv`
-- `<strategy>/deployment_readiness.csv`
-- `<strategy>/execution_sensitivity.csv`
-- `<strategy>/execution_calibration.csv`
-- `<strategy>/strong_conditions.csv`, `<strategy>/weak_conditions.csv`
-- `<strategy>/capacity.csv`
-- `deployment_readiness.csv` (all strategy criteria rows)
-- `deployment_readiness_summary.csv` (one summary row per strategy)
-- `portfolio_correlation_<method>.csv`
-- `portfolio_weights_<method>.csv`
-- `portfolio_summary_<method>.csv`
-- `portfolio_summary.csv` (all methods)
-- `portfolio_risk_report.csv` (risk parity default risk report)
-- `strategy_correlation.csv` (risk parity default strategy correlation)
-- `live_opportunities.csv` (top current candidates across strategy + structural modules)
-- `consistency_arb_*.csv`, `microstructure_mm_*.csv`, `resolution_mechanics_*.csv`
-- `market_links.csv`
-- `integrity_report_pre.csv`, `integrity_report_post.csv`
-- `insufficient_data_report.csv` (only when integrity gate fails)
-
-### Core APIs
-
-- `run_walkforward(strategy)` in `polymarket_edge/research/validation.py`
-- `bootstrap_metrics(returns)` in `polymarket_edge/research/validation.py`
-- `build_portfolio(strategies, method=\"risk_parity\")` in `polymarket_edge/research/portfolio.py`
-
-## 7-Day Data Collection (Recommended)
-
-Collect enough time variation before drawing conclusions:
-
-```bash
-python scripts/collect_snapshots.py --config configs/collection.yaml
-```
-
-Or directly:
-
-```bash
-python scripts/collect_snapshots.py --minutes 5 --hours 168 --max-markets 1000 --with-trades --trade-markets 200 --resolved-trade-markets 200
-```
-
-## Backfill Resolved Outcomes
-
-```bash
-python scripts/backfill_resolved.py --max-rows 5000
-```
-
-This populates:
-
-- `resolutions`
-- `resolved_markets`
-- refreshed `markets` / `market_outcomes`
-
-## Research Integrity + Deploy Gate (How To Interpret)
-
-`PASS` means the strategy satisfied all configured gates on current data:
-
-- positive test mean return
-- positive block-bootstrap CI lower bound
-- positive walk-forward mean with enough valid folds
-- positive EV diagnostics (Spearman + monotonicity)
-- survives pessimistic execution assumptions
-- no excessive single-market profit concentration
-
-`PASS` does **not** mean guaranteed live profitability. It means the strategy cleared this repo’s current statistical and execution checks and is a candidate for capped paper/live rollout.
-
-If data is insufficient, the run exits early and writes `data/research_v2/insufficient_data_report.csv` instead of producing misleading scores.
+- This repo is for systematic, automatable research.
+- Do not use manipulation, insider information, ToS circumvention, or rule gaming.
+- Live deployment should add monitoring, retries/backoff, kill switches, exposure limits, and audit logging.
